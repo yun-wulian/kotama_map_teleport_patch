@@ -12,7 +12,7 @@ public sealed class MapTeleportPlugin : BasePlugin
 {
     public const string PluginGuid = "com.yunwulian.kotama.map-teleport";
     public const string PluginName = "Kotama Map Teleport";
-    public const string PluginVersion = "0.1.8";
+    public const string PluginVersion = "0.1.9";
 
     internal static ManualLogSource LogSource;
     internal static MapTeleportPlugin Instance;

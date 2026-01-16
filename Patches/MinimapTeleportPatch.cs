@@ -7,6 +7,7 @@ using EscapeGame.UIGen;
 using Game.Core;
 using BepInEx.Unity.IL2CPP.Utils.Collections;
 using HarmonyLib;
+using Il2CppSystem.Collections.Generic;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -76,14 +77,31 @@ internal static class MapTeleportCore
             return;
         }
 
+        // IMPORTANT:
+        // Only hide the InGameMenu container panels (topbar + map) here.
+        // Hiding other panels can accidentally hide gameplay HUD and require an ESC toggle to recover.
         try { ui.HideUISync<InGameMenuTopBarPanel>(); } catch { }
         try { ui.HideUISync<InGameMenuMapPanel>(); } catch { }
-        try { ui.HideUISync<InGameMenuItem>(); } catch { }
-        try { ui.HideUISync<InGameMenuWeapon>(); } catch { }
-        try { ui.HideUISync<InGameMenuGeneralStatus>(); } catch { }
-        try { ui.HideUISync<InGameMenuChipPanel>(); } catch { }
-        try { ui.HideUISync<InGameMenuNotebookPanel>(); } catch { }
-        try { ui.HideUISync<InGameMenuNotebookPanelRefactor>(); } catch { }
+    }
+
+    private static void TryUnfreezeUI(string phase)
+    {
+        try
+        {
+            IUIManager ui = UIMgrWrap.Ins;
+            if (ui == null)
+            {
+                return;
+            }
+
+            // When closing InGameMenu via manual panel hiding, the game's normal unfreeze path may be bypassed.
+            // This can leave gameplay HUD hidden until the user toggles ESC.
+            ui.SetFrozenAll(isFrozen: false, unexpectName: null);
+        }
+        catch (Exception ex)
+        {
+            MapTeleportPlugin.LogSource?.LogWarning($"[MapTeleport] TryUnfreezeUI({phase}) failed: {ex}");
+        }
     }
 
     internal static UI_MarkWolrd TryGetNowAttackingMark(InGameMenuMapPanelCtrl menu)
@@ -265,6 +283,7 @@ internal static class MapTeleportCore
 
         // Close once more after starting teleport, in case the UI was re-opened by internal state.
         TryCloseMenu(pending?.Menu, "post-start");
+        TryUnfreezeUI("post-start");
 
         for (int i = 0; i < 20; i++)
         {
@@ -272,6 +291,7 @@ internal static class MapTeleportCore
         }
 
         SafeLogPlayerInfo("after");
+        TryUnfreezeUI("after");
 
         if (oldTimeScale == 0f)
         {
@@ -349,6 +369,7 @@ internal static class MapTeleportCore
             {
                 MapTeleportPlugin.LogSource?.LogInfo("[MapTeleport] teleport callback invoked");
                 TryCloseMenu(pending?.Menu, "callback");
+                TryUnfreezeUI("callback");
             };
 
             MapTeleportPlugin.LogSource?.LogInfo(
