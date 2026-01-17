@@ -458,8 +458,8 @@ internal static class MinimapTeleportPatch
             }
 
             float dx = module.worldPos.x - worldPos.x;
-            float dz = module.worldPos.z - worldPos.y;
-            float d2 = dx * dx + dz * dz;
+            float dy = module.worldPos.y - worldPos.y;
+            float d2 = dx * dx + dy * dy;
 
             if (d2 < bestDistSqr)
             {
