@@ -166,17 +166,23 @@ internal static class MapTeleportCore
         {
             UI_MarkWolrd mark = TryGetNowAttackingMark(menu);
 
-            MapTeleportPlugin.LogSource.LogInfo($"[MapTeleport] {source}: invoked. nowMapState={UIMapMgr.Instance?.nowMapState}, mark={Describe(mark)}");
+            if (MapTeleportPlugin.DebugLogsEnabled)
+            {
+                MapTeleportPlugin.LogSource.LogInfo($"[MapTeleport] {source}: invoked. nowMapState={UIMapMgr.Instance?.nowMapState}, mark={Describe(mark)}");
+            }
 
             if (mark == null)
             {
                 return false;
             }
 
-            MapMarkObjectModule module = MinimapTeleportPatch.TryFindNearestModule(mark.id, mark.worldPos);
+            MapMarkObjectModule module = MinimapTeleportPatch.TryFindBestModuleForMark(mark);
             if (!MinimapTeleportPatch.TryClassifyAsSavePoint(mark, module, out bool isTemporarySavePoint))
             {
-                MapTeleportPlugin.LogSource.LogInfo($"[MapTeleport] {source}: not a savepoint, skipping. mark={Describe(mark)}");
+                if (MapTeleportPlugin.DebugLogsEnabled)
+                {
+                    MapTeleportPlugin.LogSource.LogInfo($"[MapTeleport] {source}: not a savepoint, skipping. mark={Describe(mark)}");
+                }
                 return false;
             }
 
@@ -275,7 +281,10 @@ internal static class MapTeleportCore
             yield break;
         }
 
-        SafeLogPlayerInfo("before");
+        if (MapTeleportPlugin.DebugLogsEnabled)
+        {
+            SafeLogPlayerInfo("before");
+        }
         SafeAdjustTargetHeight(pending);
 
         float oldTimeScale = Time.timeScale;
@@ -290,7 +299,10 @@ internal static class MapTeleportCore
             yield return null;
         }
 
-        SafeLogPlayerInfo("after");
+        if (MapTeleportPlugin.DebugLogsEnabled)
+        {
+            SafeLogPlayerInfo("after");
+        }
         TryUnfreezeUI("after");
 
         if (oldTimeScale == 0f)
@@ -407,15 +419,36 @@ internal static class MinimapTeleportPatch
         return !handled;
     }
 
-    internal static MapMarkObjectModule TryFindNearestModule(int id, Vector2 worldPos)
+    private struct ModuleCandidate
     {
-        if (UIMapMgr.Instance == null || UIMapMgr.Instance.allMapMarkObjs == null)
+        public MapMarkObjectModule Module;
+        public float DistSqr;
+    }
+
+    internal static MapMarkObjectModule TryFindBestModuleForMark(UI_MarkWolrd mark)
+    {
+        if (mark == null || UIMapMgr.Instance == null || UIMapMgr.Instance.allMapMarkObjs == null)
         {
             return null;
         }
 
+        int id = mark.id;
+        Vector2 worldPos = mark.worldPos;
+
         MapMarkObjectModule best = null;
         float bestDistSqr = float.PositiveInfinity;
+        int candidatesCount = 0;
+
+        // Collect candidates for optional debug dump.
+        // We avoid Linq here to keep IL2CPP happy.
+        ModuleCandidate[] candidates = null;
+        bool wantCandidates = MapTeleportPlugin.DebugCandidateModulesEnabled || MapTeleportPlugin.DebugLogsEnabled;
+        int maxKeep = 0;
+        if (wantCandidates)
+        {
+            maxKeep = Mathf.Clamp(MapTeleportPlugin.DebugCandidateModulesLimit, 0, 128);
+            candidates = maxKeep > 0 ? new ModuleCandidate[maxKeep] : null;
+        }
 
         foreach (MapMarkObjectModule module in UIMapMgr.Instance.allMapMarkObjs)
         {
@@ -432,6 +465,71 @@ internal static class MinimapTeleportPatch
             {
                 best = module;
                 bestDistSqr = d2;
+            }
+
+            if (candidates != null)
+            {
+                // Keep the closest N candidates by simple insertion (N is small).
+                ModuleCandidate c = new() { Module = module, DistSqr = d2 };
+                int keep = Mathf.Min(candidatesCount, candidates.Length);
+                int insertAt = keep;
+                for (int i = 0; i < keep; i++)
+                {
+                    if (d2 < candidates[i].DistSqr)
+                    {
+                        insertAt = i;
+                        break;
+                    }
+                }
+
+                if (insertAt < candidates.Length)
+                {
+                    int shiftStart = Mathf.Min(keep, candidates.Length - 1);
+                    for (int j = shiftStart; j > insertAt; j--)
+                    {
+                        candidates[j] = candidates[j - 1];
+                    }
+                    candidates[insertAt] = c;
+                }
+            }
+
+            candidatesCount++;
+        }
+
+        if (MapTeleportPlugin.DebugCandidateModulesEnabled)
+        {
+            try
+            {
+                MapTeleportPlugin.LogSource?.LogInfo(
+                    $"[MapTeleport] candidates: id={id}, markWorldPos={worldPos}, markAnchorPos={mark.anchorPos}, tips='{mark?.tips?.text}', icon='{(mark?.markIcon?.sprite != null ? mark.markIcon.sprite.name : null)}', totalCandidates={candidatesCount}");
+
+                if (candidates != null)
+                {
+                    int print = Mathf.Min(candidatesCount, candidates.Length);
+                    for (int i = 0; i < print; i++)
+                    {
+                        MapMarkObjectModule m = candidates[i].Module;
+                        string cond = m != null ? m.conditionMame : null;
+                        string sceneGuess = TryExtractSceneName(cond);
+                        Vector3 pos = m != null ? m.worldPos : default;
+                        MapTeleportPlugin.LogSource?.LogInfo(
+                            $"[MapTeleport] candidate[{i}]: d2={candidates[i].DistSqr:F4}, pos={pos}, sceneGuess='{sceneGuess}', cond='{cond}'");
+                    }
+                }
+
+                if (best != null)
+                {
+                    MapTeleportPlugin.LogSource?.LogInfo(
+                        $"[MapTeleport] candidate(best): d2={bestDistSqr:F4}, pos={best.worldPos}, cond='{best.conditionMame}'");
+                }
+                else
+                {
+                    MapTeleportPlugin.LogSource?.LogWarning("[MapTeleport] candidate(best): <null>");
+                }
+            }
+            catch (Exception ex)
+            {
+                MapTeleportPlugin.LogSource?.LogWarning($"[MapTeleport] candidates dump failed: {ex}");
             }
         }
 
@@ -608,6 +706,11 @@ internal static class DebugOnUpdateMarkChangePatch
     {
         try
         {
+            if (!MapTeleportPlugin.DebugLogsEnabled)
+            {
+                return;
+            }
+
             if (__instance == null || MapTeleportPlugin.LogSource == null)
             {
                 return;
